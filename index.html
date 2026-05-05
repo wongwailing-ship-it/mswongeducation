@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>亞特蘭提斯：雲端修復協議</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- 配置與初始化 ---
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'atlantis-html-v1';
+
+        // 全局變量
+        window.state = {
+            user: null,
+            score: 0,
+            highScore: 0,
+            currentStep: 0,
+            p1Questions: [],
+            userPoints: [],
+            p2Data: { title: "核心重啟波形：能量增幅", labels: ["P1", "P2", "P3", "P4", "P5"], data: [100, 300, 250, 500, 450], yMax: 600 }
+        };
+
+        // --- 認證邏輯 (Rule 3) ---
+        async function initAuth() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (e) { console.error("Auth Failed", e); }
+        }
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                window.state.user = user;
+                document.getElementById('uid-display').innerText = `ID: ${user.uid.substring(0,8)}`;
+                loadUserData(user.uid);
+            }
+        });
+
+        // --- Firestore 數據 (Rule 1) ---
+        async function loadUserData(uid) {
+            const docRef = doc(db, 'artifacts', appId, 'users', uid, 'progress', 'current');
+            onSnapshot(docRef, (snap) => {
+                if (snap.exists()) {
+                    window.state.highScore = snap.data().highScore || 0;
+                    document.getElementById('high-score').innerText = window.state.highScore;
+                } else {
+                    setDoc(docRef, { highScore: 0, lastPlayed: new Date() });
+                }
+            }, (err) => console.error(err));
+        }
+
+        window.saveFinalScore = async function(finalScore) {
+            if (!window.state.user) return;
+            const docRef = doc(doc(db, 'artifacts', appId, 'users', window.state.user.uid, 'progress', 'current'));
+            await updateDoc(docRef, {
+                highScore: Math.max(window.state.highScore, finalScore),
+                lastPlayed: new Date()
+            });
+        };
+
+        initAuth();
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&family=Orbitron:wght@400;700&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; background: #020617; color: #f8fafc; overflow: hidden; height: 100vh; }
+        .atlantis-font { font-family: 'Orbitron', sans-serif; }
+        .game-card { background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(15px); border: 2px solid #0ea5e9; border-radius: 2rem; }
+        .draw-zone { cursor: crosshair; background: rgba(0, 0, 0, 0.3); background-image: radial-gradient(#0ea5e9 1px, transparent 1px); background-size: 30px 30px; }
+        .plot-point { width: 14px; height: 14px; background: #fbbf24; border: 2px solid white; border-radius: 50%; position: absolute; transform: translate(-50%, -50%); box-shadow: 0 0 15px #fbbf24; z-index: 30; }
+        .bubble { position: absolute; background: rgba(255, 255, 255, 0.1); border-radius: 50%; pointer-events: none; animation: rise 10s infinite ease-in; }
+        @keyframes rise { 0% { transform: translateY(110vh) scale(0); opacity: 0; } 50% { opacity: 0.3; } 100% { transform: translateY(-10vh) scale(1.5); opacity: 0; } }
+    </style>
+</head>
+<body class="flex flex-col items-center p-4">
+    <div id="bubble-container"></div>
+
+    <!-- 導航欄 -->
+    <nav class="w-full max-w-5xl flex justify-between items-center mb-6 z-10">
+        <div class="flex items-center gap-3">
+            <span class="text-3xl">🔱</span>
+            <div>
+                <h1 class="atlantis-font text-lg font-bold text-blue-400">ATLANTIS CLOUD</h1>
+                <p id="uid-display" class="text-[10px] text-slate-500 italic">正在連接深海網格...</p>
+            </div>
+        </div>
+        <div class="flex gap-4">
+            <div class="text-right bg-slate-900/50 px-4 py-1 rounded-xl border border-slate-800">
+                <p class="text-[9px] uppercase text-slate-500">最高分</p>
+                <p id="high-score" class="font-bold text-yellow-500 atlantis-font">0</p>
+            </div>
+            <div class="bg-blue-600 px-6 py-2 rounded-xl text-center shadow-lg shadow-blue-900/50">
+                <p class="text-[9px] text-blue-200 uppercase">SCORE</p>
+                <p id="current-score" class="font-bold text-xl atlantis-font">0</p>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 主遊戲區 -->
+    <main class="w-full max-w-5xl h-[75vh] relative z-10">
+        <!-- 開始介面 -->
+        <div id="start-screen" class="game-card p-12 text-center h-full flex flex-col justify-center items-center">
+            <h2 class="text-4xl font-bold mb-6 italic">亞特蘭提斯：雲端修復協議</h2>
+            <p class="max-w-md text-slate-400 mb-10 text-lg">數據將自動同步至遠古數據庫。修復師，準備好進行 10 項能源校準任務了嗎？</p>
+            <button onclick="startGame()" class="px-12 py-5 bg-blue-600 hover:bg-blue-500 rounded-full text-xl font-bold transition-all hover:scale-105 active:scale-95 atlantis-font">
+                INITIALIZE SYNC
+            </button>
+        </div>
+
+        <!-- 任務介面 -->
+        <div id="game-screen" class="hidden h-full grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="md:col-span-2 game-card p-6 flex flex-col relative overflow-hidden">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 id="task-title" class="text-xl font-bold text-blue-300">能量波動掃描</h3>
+                    <span id="step-count" class="atlantis-font text-blue-500">1 / 10</span>
+                </div>
+                <div class="flex-grow relative bg-black/20 rounded-xl p-4">
+                    <canvas id="chart-canvas"></canvas>
+                </div>
+            </div>
+            <div class="game-card p-8 flex flex-col">
+                <p id="question-text" class="text-xl font-bold mb-8 leading-snug">正在讀取數據...</p>
+                <div id="options-container" class="space-y-3"></div>
+            </div>
+        </div>
+
+        <!-- 繪圖介面 -->
+        <div id="draw-screen" class="hidden h-full grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div class="game-card p-6 flex flex-col">
+                <h3 class="font-bold text-yellow-500 mb-4 atlantis-font">SCROLL_DATA</h3>
+                <div id="data-table" class="space-y-2 flex-grow"></div>
+                <button id="submit-draw" onclick="checkDrawing()" class="w-full py-4 bg-emerald-600 rounded-xl font-bold mt-4 opacity-50 cursor-not-allowed" disabled>
+                    重啟核心
+                </button>
+            </div>
+            <div class="md:col-span-3 game-card p-8 relative flex flex-col">
+                <h3 class="text-lg font-bold mb-4">核心重啟波形 (Final Mission)</h3>
+                <div id="draw-container" class="flex-grow draw-zone relative border-l border-b border-blue-500/50" onclick="handlePlot(event)">
+                    <div id="points-layer"></div>
+                    <canvas id="line-canvas" class="absolute inset-0 pointer-events-none"></canvas>
+                </div>
+                <div id="x-axis" class="flex justify-between mt-2 text-[10px] text-slate-500"></div>
+            </div>
+        </div>
+
+        <!-- 結算介面 -->
+        <div id="end-screen" class="hidden game-card p-12 text-center h-full flex flex-col justify-center items-center">
+            <div class="text-7xl mb-6">💎</div>
+            <h2 class="text-4xl font-bold mb-2 atlantis-font">PROTOCOLS COMPLETE</h2>
+            <p class="text-blue-400 mb-8 uppercase tracking-widest">能量已成功同步至雲端</p>
+            <div class="text-8xl font-bold text-yellow-500 mb-10" id="final-score-display">0</div>
+            <button onclick="location.reload()" class="px-12 py-4 bg-blue-700 hover:bg-blue-600 rounded-full font-bold">重新啟動</button>
+        </div>
+    </main>
+
+    <!-- 反饋彈窗 -->
+    <div id="modal" class="fixed inset-0 bg-slate-950/90 hidden z-50 flex items-center justify-center p-4">
+        <div id="modal-box" class="bg-slate-900 p-10 rounded-[3rem] max-w-sm w-full text-center border-4 border-blue-500">
+            <div id="modal-icon" class="text-5xl mb-4"></div>
+            <h3 id="modal-title" class="text-2xl font-bold mb-4 atlantis-font text-blue-400"></h3>
+            <p id="modal-msg" class="text-slate-400 mb-10"></p>
+            <button id="modal-btn" class="w-full py-4 bg-blue-600 rounded-2xl font-bold text-xl">確認</button>
+        </div>
+    </div>
+
+    <script>
+        const QUESTIONS = [
+            { title: "氧氣生成模組", labels: ["08:00", "10:00", "12:00", "14:00", "16:00"], data: [150, 180, 240, 210, 190], q: "10:00 到 12:00 之間增加了多少？", opts: ["40 升", "60 升", "90 升"], ans: 1, hint: "240 - 180 = 60。" },
+            { title: "外殼水壓監控", labels: ["層1", "層2", "層3", "層4"], data: [10, 25, 45, 70], q: "壓力報告呈現什麼趨勢？", opts: ["下降", "上升", "波動"], ans: 1, hint: "點都在往上爬。" },
+            { title: "發光水母密度", labels: ["東", "西", "南", "北"], data: [450, 680, 320, 510], q: "哪一區密度最高？", opts: ["東區", "西區", "南區"], ans: 1, hint: "看最高的點。" },
+            { title: "晶片冷卻劑", labels: ["1月", "2月", "3月", "4月"], data: [100, 90, 80, 65], q: "3月到4月消耗了多少？", opts: ["5%", "10%", "15%"], ans: 2, hint: "80 - 65 = 15。" },
+            { title: "傳送門進度", labels: ["週一", "週二", "週三", "週四"], data: [10, 20, 50, 60], q: "進度增幅最快的是？", opts: ["週一二", "週二三", "週三四"], ans: 1, hint: "線段最陡的地方。" },
+            { title: "核心溫度", labels: ["0時", "4時", "8時", "12時"], data: [40, 35, 55, 80], q: "幾時開始從下降轉上升？", opts: ["4時", "8時", "12時"], ans: 0, hint: "找圖表的最低谷。" },
+            { title: "遠古魚類洄游", labels: ["春", "夏", "秋", "冬"], data: [12, 35, 28, 9], q: "夏季與冬季相差多少？ (單位:千)", opts: ["15", "22", "26"], ans: 2, hint: "35 - 9 = 26。" },
+            { title: "防護罩等級", labels: ["T1", "T2", "T3", "T4"], data: [80, 75, 78, 82], q: "T2 到 T3 的變化是？", opts: ["下3點", "上3點", "上5點"], ans: 1, hint: "78 - 75 = 3。" },
+            { title: "通訊強度", labels: ["1km", "2km", "3km", "4km"], data: [0, -20, -50, -90], q: "強度趨勢是？", opts: ["變強", "變弱", "穩定"], ans: 1, hint: "負數越來越大，強度越弱。" }
+        ];
+
+        let chart = null;
+
+        function startGame() {
+            document.getElementById('start-screen').classList.add('hidden');
+            document.getElementById('game-screen').classList.remove('hidden');
+            createBubbles();
+            loadStep();
+        }
+
+        function loadStep() {
+            const q = QUESTIONS[window.state.currentStep];
+            document.getElementById('task-title').innerText = q.title;
+            document.getElementById('step-count').innerText = `${window.state.currentStep + 1} / 10`;
+            document.getElementById('question-text').innerText = q.q;
+            
+            renderChart(q.labels, q.data);
+            const opts = document.getElementById('options-container');
+            opts.innerHTML = '';
+            q.opts.forEach((opt, i) => {
+                const b = document.createElement('button');
+                b.className = "w-full p-4 rounded-xl bg-slate-800 border border-slate-700 text-left hover:border-blue-400 transition-all";
+                b.innerText = opt;
+                b.onclick = () => checkAnswer(i === q.ans);
+                opts.appendChild(b);
+            });
+        }
+
+        function renderChart(labels, data) {
+            const ctx = document.getElementById('chart-canvas').getContext('2d');
+            if (chart) chart.destroy();
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{ data, borderColor: '#0ea5e9', backgroundColor: 'rgba(14, 165, 233, 0.1)', fill: true, tension: 0.1, pointRadius: 6 }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+            });
+        }
+
+        function checkAnswer(correct) {
+            if (correct) {
+                window.state.score += 100;
+                document.getElementById('current-score').innerText = window.state.score;
+                showModal("🔵", "解讀成功", "數據同步完成。", () => {
+                    window.state.currentStep++;
+                    if (window.state.currentStep < 9) loadStep();
+                    else startPhase2();
+                });
+            } else {
+                showModal("🟠", "校準失敗", QUESTIONS[window.state.currentStep].hint);
+            }
+        }
+
+        function startPhase2() {
+            document.getElementById('game-screen').classList.add('hidden');
+            document.getElementById('draw-screen').classList.remove('hidden');
+            const table = document.getElementById('data-table');
+            const data = window.state.p2Data;
+            table.innerHTML = data.labels.map((l, i) => `
+                <div class="flex justify-between p-3 bg-slate-800 rounded-xl border-l-2 border-yellow-500">
+                    <span class="text-xs text-slate-400">${l}</span>
+                    <span class="font-bold text-yellow-500">${data.data[i]}</span>
+                </div>
+            `).join('');
+            document.getElementById('x-axis').innerHTML = data.labels.map(l => `<span>${l}</span>`).join('');
+        }
+
+        window.handlePlot = function(e) {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const segment = rect.width / 4;
+            const idx = Math.round(x / segment);
+
+            if (idx === window.state.userPoints.length) {
+                window.state.userPoints.push({ x: idx * segment, y });
+                drawUserLine();
+                if (window.state.userPoints.length === 5) {
+                    const btn = document.getElementById('submit-draw');
+                    btn.disabled = false;
+                    btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                }
+            }
+        };
+
+        function drawUserLine() {
+            const canvas = document.getElementById('line-canvas');
+            const ctx = canvas.getContext('2d');
+            const rect = canvas.parentElement.getBoundingClientRect();
+            canvas.width = rect.width; canvas.height = rect.height;
+            
+            document.getElementById('points-layer').innerHTML = '';
+            ctx.beginPath();
+            ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 3;
+            
+            window.state.userPoints.forEach((p, i) => {
+                const dot = document.createElement('div');
+                dot.className = 'plot-point';
+                dot.style.left = `${p.x}px`; dot.style.top = `${p.y}px`;
+                document.getElementById('points-layer').appendChild(dot);
+                if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+            });
+            ctx.stroke();
+        }
+
+        window.checkDrawing = function() {
+            const data = window.state.p2Data;
+            const rect = document.getElementById('draw-container').getBoundingClientRect();
+            let err = 0;
+            data.data.forEach((val, i) => {
+                const targetY = (1 - (val / 600)) * rect.height;
+                err += Math.abs(window.state.userPoints[i].y - targetY);
+            });
+            if (err/5 < 40) {
+                window.state.score += 500;
+                window.saveFinalScore(window.state.score);
+                document.getElementById('draw-screen').classList.add('hidden');
+                document.getElementById('end-screen').classList.remove('hidden');
+                document.getElementById('final-score-display').innerText = window.state.score;
+            } else {
+                showModal("🟠", "波形不穩", "請根據卷軸數據重新校準。數值越高，點的位置應該越高。", () => {
+                    window.state.userPoints = [];
+                    drawUserLine();
+                    document.getElementById('submit-draw').disabled = true;
+                    document.getElementById('submit-draw').classList.add('opacity-50', 'cursor-not-allowed');
+                });
+            }
+        };
+
+        function showModal(icon, title, msg, callback) {
+            const m = document.getElementById('modal');
+            m.classList.remove('hidden');
+            document.getElementById('modal-icon').innerText = icon;
+            document.getElementById('modal-title').innerText = title;
+            document.getElementById('modal-msg').innerText = msg;
+            document.getElementById('modal-btn').onclick = () => { m.classList.add('hidden'); if(callback) callback(); };
+        }
+
+        function createBubbles() {
+            const c = document.getElementById('bubble-container');
+            for(let i=0; i<15; i++) {
+                const b = document.createElement('div');
+                b.className = 'bubble';
+                b.style.width = b.style.height = `${Math.random()*20+10}px`;
+                b.style.left = `${Math.random()*100}vw`;
+                b.style.animationDelay = `${Math.random()*5}s`;
+                c.appendChild(b);
+            }
+        }
+    </script>
+</body>
+</html>
